@@ -1,102 +1,82 @@
 import streamlit as st
 import google.generativeai as genai
 
-# --- 1. 페이지 설정 및 API 연결 ---
+# 페이지 설정
 st.set_page_config(page_title="한국사 수행평가 도우미", layout="wide")
 
+# 1. API 키 로드 및 클리닝
 if "GOOGLE_API_KEY" not in st.secrets:
-    st.error("⚠️ Streamlit 설정(Secrets)에서 API 키를 등록해야 합니다.")
+    st.error("❌ Streamlit 설정(Secrets)에 GOOGLE_API_KEY가 없습니다!")
     st.stop()
 
-# API 키의 공백이나 따옴표 제거 후 설정
-api_key = st.secrets["GOOGLE_API_KEY"].strip().replace('"', '').replace("'", "")
+# 키 앞뒤의 공백이나 따옴표를 완전히 제거합니다.
+api_key = st.secrets["GOOGLE_API_KEY"].strip().strip('"').strip("'")
 genai.configure(api_key=api_key)
 
-# 가장 안정적인 모델 연결 시도
+# 2. 모델 로드 (에러가 나면 상세 내용을 화면에 표시)
 @st.cache_resource
-def load_model():
-    model_names = ['gemini-1.5-flash', 'models/gemini-1.5-flash', 'gemini-pro']
-    for name in model_names:
+def init_model():
+    # 시도할 모델 명칭
+    names = ['gemini-1.5-flash', 'models/gemini-1.5-flash', 'gemini-pro']
+    last_error = ""
+    
+    for name in names:
         try:
             m = genai.GenerativeModel(name)
-            m.generate_content("Hi", generation_config={"max_output_tokens": 1})
-            return m
-        except:
+            # 연결 확인을 위해 한 단어 테스트
+            m.generate_content("test", generation_config={"max_output_tokens": 1})
+            return m, None
+        except Exception as e:
+            last_error = str(e)
             continue
-    return None
+    return None, last_error
 
-model = load_model()
+model, error_msg = init_model()
 
-# --- 2. 수행평가 내용 생성 함수 ---
-def generate_report(interest, history=[]):
-    exclude_text = f"(단, {', '.join(history)}는 이미 추천했으니 제외)" if history else ""
+# 연결 실패 시 안내
+if model is None:
+    st.error("🚨 AI 모델 연결에 실패했습니다!")
+    st.warning(f"원인: {error_msg}")
+    st.info("💡 해결방법: \n1. [Google AI Studio](https://aistudio.google.com/app/apikey)에서 새 키를 만드세요.\n2. Secrets에 GOOGLE_API_KEY = '새로운키' 라고 정확히 넣으세요.")
+    st.stop()
+
+# 3. 수행평가 생성 함수
+def make_report(topic, history=[]):
+    exclude = f"(이미 나온 {', '.join(history)} 제외)" if history else ""
+    prompt = f"당신은 역사 교사입니다. 학생의 관심사 '{topic}'와 관련된 한국 문화유산 수행평가를 보고서 형식으로 작성하세요. {exclude} 양식: 선정유산, 선정 이유, 시대, 위치, 인터뷰 1/2/3, 탐방안."
     
-    prompt = f"""
-    당신은 고등학교 역사 교사입니다. 학생의 진로/관심사 '{interest}'와 관련된 한국 문화유산(구석기~조선)을 선정해 수행평가를 작성하세요.
-    {exclude_text}
-
-    반드시 아래 양식을 엄격히 지켜주세요:
-    1. 선정된 문화유산: [이름]
-    2. 선정 이유: [진로/관심사와 유산의 특징을 아주 구체적으로 연결하여 작성]
-    3. 제작 시대: [시대명]
-    4. 현재 위치(소재지): [정확한 주소]
-
-    [인터뷰 1 - 과거인들의 생활, 사상, 정치]
-    Q: [문화유산의 특징과 당시 시대상을 묻는 질문]
-    A: [유산의 배경, 종교적/정치적 의미를 담은 답변]
-
-    [인터뷰 2 - 역사적 시련과 변화]
-    Q: [세월을 거치며 겪은 시련이나 복원 과정, 혹은 현재 상황 질문]
-    A: [전쟁, 파손, 복원 노력 또는 현재의 보존 현황 답변]
-
-    [인터뷰 3 - 심화 관점(비판적/융합적/비교사적 중 택1)]
-    *선택한 관점 종류를 제목에 명시할 것*
-    Q: [문제의식이 담긴 날카로운 질문이나 타 교과 연계 질문]
-    A: [깊이 있는 통찰이 담긴 답변]
-
-    [선정한 문화유산 테마 탐방안]
-    - 기획 의도가 포함된 제목: [흥미로운 제목]
-    - 필수 관람 포인트(감상법): [문장으로 완성된 3가지 핵심 포인트]
-    """
     try:
         response = model.generate_content(prompt)
         return response.text
     except Exception as e:
-        return f"내용 생성 중 에러 발생: {e}"
+        return f"생성 실패: {str(e)}"
 
-# --- 3. UI 구성 ---
-st.title("🏛️ 한국사 수행평가: 문화유산 탐구 AI")
-st.info("진로를 입력하면 수행평가 양식에 맞춘 인터뷰와 탐방안을 써드립니다.")
+# 4. UI 화면
+st.title("🏛️ 한국사 수행평가 AI")
+st.success(f"✅ AI 연결됨: {model.model_name}")
 
-if 'history' not in st.session_state:
-    st.session_state.history = []
-if 'current_text' not in st.session_state:
-    st.session_state.current_text = ""
+if 'history' not in st.session_state: st.session_state.history = []
+if 'text' not in st.session_state: st.session_state.text = ""
 
-with st.sidebar:
-    user_input = st.text_input("나의 진로 또는 관심분야", placeholder="예: 인공지능, 건축가, 의학...")
-    c1, c2 = st.columns(2)
-    submit = c1.button("내용 생성")
-    retry = c2.button("다른 유산 🔄")
+user_input = st.text_input("진로나 관심분야를 적어주세요")
 
-if (submit or retry) and user_input:
-    with st.spinner("AI가 자료를 조사 중입니다..."):
-        # 다른 유산 추천 시 히스토리 전달
-        h_list = st.session_state.history if retry else []
-        res = generate_report(user_input, h_list)
-        st.session_state.current_text = res
-        
-        # 유산 이름 추출하여 기록
-        try:
-            name = res.split('\n')[0].split(':')[-1].strip()
-            if retry:
-                st.session_state.history.append(name)
-            else:
-                st.session_state.history = [name]
-        except:
-            pass
+c1, c2 = st.columns(2)
+if c1.button("내용 생성"):
+    if user_input:
+        with st.spinner("작성 중..."):
+            res = make_report(user_input)
+            st.session_state.text = res
+            st.session_state.history = [res.split('\n')[0]]
+    else: st.warning("입력창을 채워주세요.")
 
-if st.session_state.current_text:
-    st.markdown("---")
-    st.markdown(st.session_state.current_text)
-    st.download_button("결과를 파일로 저장", st.session_state.current_text, file_name="history_task.txt")
+if c2.button("다른 거 추천 🔄"):
+    if user_input:
+        with st.spinner("다시 찾는 중..."):
+            res = make_report(user_input, st.session_state.history)
+            st.session_state.text = res
+            st.session_state.history.append(res.split('\n')[0])
+
+if st.session_state.text:
+    st.divider()
+    st.markdown(st.session_state.text)
+    st.download_button("결과 저장", st.session_state.text, file_name="report.txt")
