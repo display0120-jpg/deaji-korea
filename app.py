@@ -1,18 +1,25 @@
 import streamlit as st
 import google.generativeai as genai
 
-# --- 1. 페이지 설정 및 디자인 (CSS 추가) ---
+# --- 1. 페이지 설정 및 디자인 ---
 st.set_page_config(page_title="한국사 수행평가 도우미", layout="wide")
 
-# 우측 상단 문구 및 보고서 디자인 스타일
+# CSS: 우측 상단 고정 문구 및 보고서 스타일
 st.markdown("""
     <style>
-    .teacher-love {
-        text-align: right;
+    /* 우측 상단에 항상 떠 있는 문구 */
+    .fixed-teacher-love {
+        position: fixed;
+        top: 60px;
+        right: 20px;
         color: #FF4B4B;
-        font-size: 1.1em;
+        font-size: 1.3em;
         font-weight: bold;
-        margin-bottom: -10px;
+        z-index: 9999;
+        background-color: rgba(255, 255, 255, 0.8);
+        padding: 5px 10px;
+        border-radius: 10px;
+        box-shadow: 0px 2px 5px rgba(0,0,0,0.1);
     }
     .report-box {
         border: 1px solid #E6E9EF;
@@ -22,6 +29,9 @@ st.markdown("""
         line-height: 1.6;
     }
     </style>
+    
+    <!-- 우측 상단 문구 HTML -->
+    <div class="fixed-teacher-love">국사쌤 사랑합니다 ❤️</div>
     """, unsafe_allow_html=True)
 
 # --- 2. API 키 설정 ---
@@ -50,11 +60,10 @@ def get_best_available_model():
     except Exception as e:
         return None, str(e)
 
-model, model_name = get_best_available_model()
+model, _ = get_best_available_model()
 
 if model is None:
-    st.error("🚨 모델 연결 실패")
-    st.code(f"에러 내용: {model_name}")
+    st.error("🚨 AI 연결 실패. API 키를 확인하세요.")
     st.stop()
 
 # --- 4. 수행평가 생성 함수 ---
@@ -80,7 +89,9 @@ def generate_history_report(topic, history_list=[]):
 
 # --- 5. UI 구성 ---
 st.title("🏛️ 한국사 수행평가 AI")
-st.success(f"✅ AI 모델 연결 성공! ({model_name})")
+
+# 요구하신 메시지로 변경
+st.success("✅ AI 모델 연결 성공! (오늘 급식 뭐 나오냐)")
 
 if 'history' not in st.session_state: st.session_state.history = []
 if 'report' not in st.session_state: st.session_state.report = ""
@@ -91,7 +102,7 @@ user_input = st.text_input("나의 진로나 관심분야를 적어주세요")
 c1, c2 = st.columns(2)
 if c1.button("보고서 생성"):
     if user_input:
-        with st.spinner("AI가 내용을 작성 중입니다..."):
+        with st.spinner("급식표보다 더 정확하게 분석 중..."):
             res = generate_history_report(user_input)
             st.session_state.report = res
             st.session_state.history = [res.split('\n')[0]]
@@ -99,23 +110,19 @@ if c1.button("보고서 생성"):
 
 if c2.button("다른 거 추천 🔄"):
     if user_input:
-        with st.spinner("새로운 유산을 찾는 중..."):
+        with st.spinner("새로운 메뉴(유산) 고르는 중..."):
             res = generate_history_report(user_input, st.session_state.history)
             st.session_state.report = res
             st.session_state.history.append(res.split('\n')[0])
 
-# --- 6. 결과 출력 (사랑합니다 문구 포함) ---
+# --- 6. 결과 출력 ---
 if st.session_state.report:
     st.divider()
     
-    # 우측 상단 문구 출력
-    st.markdown('<div class="teacher-love">국사쌤 사랑합니다 ❤️</div>', unsafe_allow_html=True)
-    
-    # 보고서 내용 출력 (박스 안에 넣기)
     st.markdown('<div class="report-box">', unsafe_allow_html=True)
     st.markdown(st.session_state.report)
     st.markdown('</div>', unsafe_allow_html=True)
     
-    # 다운로드 버튼 (저장 파일에도 문구 추가)
+    # 다운로드 버튼
     final_text = f"국사쌤 사랑합니다 ❤️\n\n{st.session_state.report}"
     st.download_button("결과 저장 (TXT)", final_text, file_name="report.txt")
