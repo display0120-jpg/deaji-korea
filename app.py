@@ -10,15 +10,15 @@ import re
 # --- 1. 페이지 설정 및 디자인 ---
 st.set_page_config(page_title="한국사 수행평가 도우미AI", layout="wide")
 
-# CSS: 우측 상단 문구 (더 낮게)
+# CSS: 우측 상단 문구 (더 작고 훨씬 낮게 배치)
 st.markdown("""
     <style>
     .fixed-teacher-love {
         position: fixed;
-        top: 200px; 
+        top: 220px; 
         right: 25px;
-        color: #bbb;
-        font-size: 0.7em;
+        color: #ddd;
+        font-size: 0.65em;
         font-weight: normal;
         z-index: 9999;
     }
@@ -26,44 +26,56 @@ st.markdown("""
     <div class="fixed-teacher-love">국사쌤 사랑합니다 ❤️</div>
     """, unsafe_allow_html=True)
 
-# --- 2. API 설정 및 모델 진단 (가장 중요) ---
+# --- 2. API 설정 및 모델 동적 탐색 (404 에러 완벽 해결) ---
 if "GOOGLE_API_KEY" not in st.secrets:
     st.error("⚠️ Streamlit Secrets에 GOOGLE_API_KEY를 등록해주세요.")
     st.stop()
 
-# 키 공백 및 따옴표 완전 제거 (매우 중요)
 api_key = st.secrets["GOOGLE_API_KEY"].strip().strip('"').strip("'")
 genai.configure(api_key=api_key)
 
 @st.cache_resource
-def diagnostic_model_load():
-    # 404 에러를 피하기 위한 시도
-    candidates = ['gemini-1.5-flash', 'models/gemini-1.5-flash', 'gemini-pro']
-    errors = []
-    
-    for name in candidates:
-        try:
-            m = genai.GenerativeModel(name)
-            # 작동 테스트 (가장 확실한 진단)
-            m.generate_content("hi", generation_config={"max_output_tokens": 1})
-            return m, None # 성공
-        except Exception as e:
-            errors.append(f"[{name}] {str(e)}")
-            continue
-    return None, errors
+def get_working_model():
+    try:
+        # 내 API 키로 사용 가능한 모델 목록을 서버에서 직접 조회
+        available_models = []
+        for m in genai.list_models():
+            if 'generateContent' in m.supported_generation_methods:
+                available_models.append(m.name)
+        
+        if not available_models:
+            return None, "사용 가능한 모델 목록을 가져오지 못했습니다."
 
-model, error_logs = diagnostic_model_load()
+        # 추천 모델 순위 (목록에 있는 것 중 가장 좋은 것 선택)
+        candidates = ['models/gemini-1.5-flash', 'models/gemini-1.5-pro', 'models/gemini-pro']
+        target_name = None
+        for cand in candidates:
+            if cand in available_models:
+                target_name = cand
+                break
+        
+        if not target_name:
+            target_name = available_models[0] # 아무거나 첫 번째 모델 선택
 
-# --- 3. UI 부분 ---
+        # 안전 설정 (차단 방지)
+        s_s = [{"category": f"HARM_CATEGORY_{c}", "threshold": "BLOCK_NONE"} for c in ["HARASSMENT", "HATE_SPEECH", "SEXUALLY_EXPLICIT", "DANGEROUS_CONTENT"]]
+        
+        m = genai.GenerativeModel(model_name=target_name, safety_settings=s_s)
+        # 작동 테스트
+        m.generate_content("hi", generation_config={"max_output_tokens": 1})
+        return m, target_name
+    except Exception as e:
+        return None, str(e)
+
+model, active_model_name = get_working_model()
+
+# --- 3. UI 및 에러 처리 ---
 st.title("🏛️ 한국사 문화유산 탐구 도우미AI")
 
-# 연결 실패 시 상세 에러 리포트 출력
 if model is None:
-    st.error("❌ 모든 AI 모델 연결 시도에 실패했습니다.")
-    with st.expander("🛠️ 기술적 에러 로그 (이 내용을 복사해서 알려주세요)"):
-        for log in error_logs:
-            st.write(log)
-    st.warning("💡 해결 방법: \n1. [Google AI Studio](https://aistudio.google.com/app/apikey)에서 새 키를 만드세요.\n2. Secrets에 따옴표 없이 키 값만 넣었는지 확인하세요.\n3. 앱을 Reboot 하세요.")
+    st.error("❌ AI 모델 연결에 실패했습니다.")
+    st.info(f"🚩 에러 상세: {active_model_name}")
+    st.warning("팁: API 키 할당량이 끝났을 수 있습니다. 다른 구글 계정으로 새 키를 발급받아보세요.")
     st.stop()
 
 # --- 4. 이미지 합성 함수 ---
@@ -84,7 +96,7 @@ def draw_on_jpg(uploaded_file, data):
         except:
             f_m = f_s = f_b = ImageFont.load_default()
 
-        # 데이터 입력
+        # 데이터 입력 (좌표 보정)
         draw.text((250, 245), data.get('heritage', ''), font=f_b, fill="black")
         r_lines = textwrap.wrap(data.get('reason', ''), width=45)
         for i, line in enumerate(r_lines[:2]):
@@ -108,17 +120,20 @@ def draw_on_jpg(uploaded_file, data):
         st.error(f"이미지 생성 실패: {e}")
         return None
 
-# --- 5. AI 생성 로직 ---
-def get_ai_data(topic, history=[]):
-    exclude = f"(이미 추천된 {', '.join(history)} 제외)" if history else ""
-    prompt = f"진로 '{topic}'와 관련된 한국 문화유산 선정해 JSON으로 답하세요. {exclude} 양식: heritage, reason, era, location, q1, a1, q2, a2, q3, a3, theme_title, theme_points."
+# --- 5. AI 데이터 생성 ---
+def get_ai_json(topic, history=[]):
+    history_str = f"(제외: {', '.join(history)})" if history else ""
+    prompt = f"""
+    당신은 역사 전문가입니다. 학생 진로 '{topic}'와 직접적 연관이 있는 한국 문화유산을 하나 선정해 JSON으로만 답하세요. {history_str}
+    JSON 형식: {{ "heritage": "이름", "reason": "이유", "era": "시대", "location": "위치", "q1": "질문", "a1": "답변", "q2": "질문", "a2": "답변", "q3": "질문", "a3": "답변", "theme_title": "제목", "theme_points": "포인트" }}
+    """
     try:
         res = model.generate_content(prompt)
         match = re.search(r'\{.*\}', res.text, re.DOTALL)
         if match: return json.loads(match.group())
         return None
     except Exception as e:
-        st.error(f"데이터 생성 실패: {e}")
+        if "429" in str(e): st.error("⏳ 할당량 초과! 1분 뒤에 시도하세요.")
         return None
 
 # --- 6. 실행 부분 ---
@@ -126,29 +141,29 @@ if 'history' not in st.session_state: st.session_state.history = []
 if 'img' not in st.session_state: st.session_state.img = None
 
 up_file = st.file_uploader("📋 양식 사진(JPG/PNG)을 올려주세요", type=['jpg','png','jpeg'])
-user_in = st.text_input("나의 진로 또는 관심분야")
+user_in = st.text_input("나의 진로 또는 관심분야 (예: 의학, 디자인, 로봇 등)")
 
 c1, c2 = st.columns(2)
 
-def handle_click(is_new=True):
+def process(is_reset=True):
     if not up_file or not user_in:
-        st.warning("사진과 진로를 입력해주세요.")
+        st.warning("사진과 진로를 모두 입력해주세요.")
         return
     with st.spinner("가장 적절한 유산을 찾는 중..."):
-        if is_new: st.session_state.history = []
-        data = get_ai_data(user_in, st.session_state.history)
+        if is_reset: st.session_state.history = []
+        data = get_ai_json(user_in, st.session_state.history)
         if data:
             st.session_state.history.append(data.get('heritage'))
             res_img = draw_on_jpg(up_file, data)
             if res_img: st.session_state.img = res_img
-        else: st.error("AI가 답변 형식을 지키지 못했습니다. 다시 시도해 주세요.")
+        else: st.error("AI가 답변을 생성하지 못했습니다. 다시 시도해 주세요.")
 
-if c1.button("수행평가(JPG) 완성하기"): handle_click(True)
-if c2.button("다른 유산 추천 🔄"): handle_click(False)
+if c1.button("수행평가(JPG) 완성하기"): process(True)
+if c2.button("다른 유산 추천 🔄"): process(False)
 
 if st.session_state.img:
     st.divider()
     st.image(st.session_state.img, use_container_width=True)
     buf = io.BytesIO()
     st.session_state.img.save(buf, format="JPEG")
-    st.download_button("📸 이미지 다운로드", buf.getvalue(), "task.jpg", "image/jpeg")
+    st.download_button("📸 이미지 다운로드", buf.getvalue(), "result.jpg", "image/jpeg")
