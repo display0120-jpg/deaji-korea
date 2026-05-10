@@ -10,14 +10,14 @@ import re
 # --- 1. 페이지 설정 및 디자인 ---
 st.set_page_config(page_title="한국사 수행평가 도우미AI", layout="wide")
 
-# CSS: 우측 상단 문구 (작고 눈에 덜 띄게 아래로 배치)
+# CSS: 우측 상단 문구 (더 낮게 배치)
 st.markdown("""
     <style>
     .fixed-teacher-love {
         position: fixed;
-        top: 160px; 
+        top: 180px; 
         right: 25px;
-        color: #ccc;
+        color: #bbb;
         font-size: 0.7em;
         font-weight: normal;
         z-index: 9999;
@@ -26,32 +26,33 @@ st.markdown("""
     <div class="fixed-teacher-love">국사쌤 사랑합니다 ❤️</div>
     """, unsafe_allow_html=True)
 
-# --- 2. API 설정 및 모델 연결 (안전장치 강화) ---
-if "GOOGLE_API_KEY" not in st.secrets:
+# --- 2. API 설정 및 모델 직접 연결 (에러 방지형) ---
+api_key_raw = st.secrets.get("GOOGLE_API_KEY", "")
+if not api_key_raw:
     st.error("⚠️ Streamlit Secrets에 GOOGLE_API_KEY를 등록해주세요.")
     st.stop()
 
-genai.configure(api_key=st.secrets["GOOGLE_API_KEY"].strip().strip('"').strip("'"))
+# API 키 정리 (공백 등 제거)
+api_key = api_key_raw.strip().strip('"').strip("'")
+genai.configure(api_key=api_key)
 
+# 모델 직접 로드 (list_models 호출 생략하여 할당량 절약)
 @st.cache_resource
-def get_working_model():
-    # 무료 한도가 가장 넉넉한 1.5-flash 모델을 우선적으로 찾습니다.
-    candidates = ['models/gemini-1.5-flash', 'models/gemini-1.5-pro', 'models/gemini-pro']
+def load_ai_model():
     try:
-        available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-        target = next((p for p in candidates if p in available_models), None)
-        
-        if target:
-            # 안전 필터 해제
-            safety_settings = [{"category": f"HARM_CATEGORY_{c}", "threshold": "BLOCK_NONE"} for c in ["HARASSMENT", "HATE_SPEECH", "SEXUALLY_EXPLICIT", "DANGEROUS_CONTENT"]]
-            return genai.GenerativeModel(model_name=target, safety_settings=safety_settings)
+        # 가장 안정적인 1.5-flash 모델로 고정
+        model_name = 'gemini-1.5-flash'
+        safety = [
+            {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
+        ]
+        return genai.GenerativeModel(model_name=model_name, safety_settings=safety)
     except Exception as e:
-        # 429 에러 등 발생 시 None 반환
-        return None
-    return None
+        return str(e)
 
-# 전역 모델 변수 (안전하게 로드)
-model = get_working_model()
+model_or_error = load_ai_model()
 
 # --- 3. 이미지 합성 함수 ---
 def draw_on_jpg(uploaded_file, data):
@@ -71,8 +72,8 @@ def draw_on_jpg(uploaded_file, data):
         except:
             f_m = f_s = f_b = ImageFont.load_default()
 
-        # 데이터 입력 (좌표 보정)
-        draw.text((250, 245), data.get('heritage', '내용 없음'), font=f_b, fill="black")
+        # [좌표 입력]
+        draw.text((250, 245), data.get('heritage', ''), font=f_b, fill="black")
         r_lines = textwrap.wrap(data.get('reason', ''), width=45)
         for i, line in enumerate(r_lines[:2]):
             draw.text((250, 285 + (i*30)), line, font=f_s, fill="black")
@@ -97,65 +98,64 @@ def draw_on_jpg(uploaded_file, data):
 
 # --- 4. AI 내용 생성 ---
 def get_ai_content(topic, history=[]):
-    if model is None:
-        st.error("🚨 AI 모델 연결이 불안정합니다. 잠시 후 다시 시도하거나 API 키를 확인해주세요.")
+    if isinstance(model_or_error, str):
+        st.error(f"❌ AI 연결 불가: {model_or_error}")
         return None
 
-    exclude = f"(제외 유산 목록: {', '.join(history)})" if history else ""
+    exclude = f"(이전에 나온 {', '.join(history)}는 절대 제외)" if history else ""
     prompt = f"""
-    당신은 역사 전문가입니다. 학생의 진로 '{topic}'와 실질적으로 깊은 연관이 있는 한국 문화유산을 하나 선정하세요. {exclude}
-    억지로 끼워 맞추지 말고 실제로 관련 있는 유산만 골라 아래 JSON 형식으로만 답하세요. 
-    JSON: {{ "heritage": "...", "reason": "...", "era": "...", "location": "...", "q1": "...", "a1": "...", "q2": "...", "a2": "...", "q3": "...", "a3": "...", "theme_title": "...", "theme_points": "..." }}
+    당신은 한국사 전문가입니다. 학생의 진로 '{topic}'와 역사적/실질적으로 깊은 연관이 있는 한국 문화유산을 하나 선정하세요. {exclude}
+    반드시 아래 JSON 형식으로만 답변하세요. 다른 설명은 하지 마세요.
+    {{ "heritage": "이름", "reason": "이유", "era": "시대", "location": "위치", "q1": "질문", "a1": "답변", "q2": "질문", "a2": "답변", "q3": "질문", "a3": "답변", "theme_title": "제목", "theme_points": "포인트" }}
     """
     try:
-        res = model.generate_content(prompt)
+        res = model_or_error.generate_content(prompt)
         match = re.search(r'\{.*\}', res.text, re.DOTALL)
         if match:
             return json.loads(match.group())
         return None
     except Exception as e:
-        if "429" in str(e):
-            st.error("⏳ 사용량이 너무 많아 잠시 차단되었습니다. 30초 정도 기다렸다가 다시 눌러주세요.")
-        else:
-            st.error(f"데이터 생성 실패: {e}")
+        st.error(f"⚠️ 생성 중 오류 발생: {e}")
         return None
 
-# --- 5. UI 및 버튼 로직 ---
+# --- 5. UI ---
 st.title("🏛️ 한국사 문화유산 탐구 도우미AI")
 
 if 'history' not in st.session_state: st.session_state.history = []
 if 'last_img' not in st.session_state: st.session_state.last_img = None
 
-up_jpg = st.file_uploader("📋 빈 양식 사진을 올려주세요", type=['jpg','jpeg','png'])
-user_job = st.text_input("나의 진로 또는 관심분야", placeholder="예: 의학, 디자인, 인공지능 등")
+up_jpg = st.file_uploader("📋 수행평가 양식 사진을 올려주세요", type=['jpg','jpeg','png'])
+user_job = st.text_input("나의 진로 또는 관심분야 (예: 의학, 디자인, 로봇 등)")
 
 c1, c2 = st.columns(2)
 
-def handle_click(is_reset=True):
-    if model is None:
-        st.error("AI 연결 상태를 확인할 수 없습니다. 페이지를 새로고침(Reboot) 해보세요.")
+def handle_click(reset_history=True):
+    if isinstance(model_or_error, str):
+        st.error("AI 모델이 준비되지 않았습니다. API 키와 할당량을 확인해주세요.")
         return
     if not up_jpg or not user_job:
-        st.warning("사진과 진로를 모두 입력해주세요.")
+        st.warning("사진과 진로를 입력해주세요.")
         return
     
-    with st.spinner("AI가 가장 적절한 유산을 분석 중입니다..."):
-        if is_reset: st.session_state.history = []
+    with st.spinner("AI가 분석 중..."):
+        if reset_history: st.session_state.history = []
         data = get_ai_content(user_job, st.session_state.history)
         if data:
             st.session_state.history.append(data.get('heritage'))
             res_img = draw_on_jpg(up_jpg, data)
-            if res_img:
-                st.session_state.last_img = res_img
+            if res_img: st.session_state.last_img = res_img
         else:
-            st.info("AI가 답변을 생성하지 못했습니다. 버튼을 다시 한번 눌러보세요.")
+            st.info("다시 한 번 눌러주세요.")
 
-if c1.button("수행평가(JPG) 완성하기"): handle_click(is_reset=True)
-if c2.button("다른 유산 추천 🔄"): handle_click(is_reset=False)
+if c1.button("수행평가 완성하기"):
+    handle_click(reset_history=True)
 
-if st.session_state.last_img is not None:
+if c2.button("다른 유산 추천 🔄"):
+    handle_click(reset_history=False)
+
+if st.session_state.last_img:
     st.divider()
     st.image(st.session_state.last_img, use_container_width=True)
     buf = io.BytesIO()
     st.session_state.last_img.save(buf, format="JPEG")
-    st.download_button("📸 완성된 이미지 저장", buf.getvalue(), "completed_task.jpg", "image/jpeg")
+    st.download_button("📸 이미지 다운로드", buf.getvalue(), "task.jpg", "image/jpeg")
