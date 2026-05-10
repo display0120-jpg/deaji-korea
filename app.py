@@ -1,177 +1,151 @@
 import streamlit as st
 import google.generativeai as genai
-from PIL import Image, ImageDraw, ImageFont
-import json
-import textwrap
-import io
-import os
-import re
 
-# --- 1. 페이지 설정 ---
-st.set_page_config(page_title="한국사 문화유산 탐구 도우미AI", layout="wide")
+# --- 1. 페이지 설정 및 디자인 ---
+st.set_page_config(page_title="한국사 수행평가 도우미AI", layout="wide")
 
-# 우측 상단 문구 (아주 작게, 수행평가에 방해 안 되게 배치)
+# CSS: 우측 상단 문구 위치 및 스타일
 st.markdown("""
     <style>
     .fixed-teacher-love {
         position: fixed;
-        bottom: 20px; 
-        right: 30px;
-        color: #ddd;
-        font-size: 0.6em;
+        top: 100px; 
+        right: 20px;
+        color: #999;
+        font-size: 0.85em;
+        font-weight: normal;
         z-index: 9999;
+        background-color: rgba(255, 255, 255, 0.5);
+        padding: 3px 8px;
+        border-radius: 5px;
+    }
+    .report-box {
+        border: 1px solid #E6E9EF;
+        border-radius: 10px;
+        padding: 25px;
+        background-color: #FFFFFF;
+        line-height: 1.7;
+        box-shadow: 0px 2px 10px rgba(0,0,0,0.05);
     }
     </style>
     <div class="fixed-teacher-love">국사쌤 사랑합니다 ❤️</div>
     """, unsafe_allow_html=True)
 
-# --- 2. API 설정 ---
+# --- 2. API 키 설정 ---
 if "GOOGLE_API_KEY" not in st.secrets:
     st.error("⚠️ Streamlit Secrets에 GOOGLE_API_KEY를 등록해주세요.")
     st.stop()
 
-genai.configure(api_key=st.secrets["GOOGLE_API_KEY"].strip().strip('"').strip("'"))
+api_key = st.secrets["GOOGLE_API_KEY"].strip().strip('"').strip("'")
+genai.configure(api_key=api_key)
 
+# --- 3. 모델 설정 ---
 @st.cache_resource
-def get_ai_model():
+def get_model():
     try:
-        available = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-        target = next((p for p in ['models/gemini-1.5-flash', 'models/gemini-pro'] if p in available), available[0])
-        return genai.GenerativeModel(model_name=target)
-    except: return None
-
-model = get_ai_model()
-
-# --- 3. 이미지 합성 함수 (정밀 좌표 및 폰트 크기 대폭 수정) ---
-def draw_content_on_image(image_file, data):
-    try:
-        # 이미지 불러오기 및 표준 해상도(A4 비율 근처)로 고정
-        base_img = Image.open(image_file).convert("RGB")
-        target_w = 1500
-        w_percent = (target_w / float(base_img.size[0]))
-        target_h = int((float(base_img.size[1]) * float(w_percent)))
-        img = base_img.resize((target_w, target_h), Image.Resampling.LANCZOS)
-        
-        draw = ImageDraw.Draw(img)
-        
-        # 폰트 설정 (크기를 키워서 가독성 확보)
-        font_path = "/usr/share/fonts/truetype/nanum/NanumGothicBold.ttf"
-        if not os.path.exists(font_path): font_path = "C:/Windows/Fonts/malgunbd.ttf" # 윈도우용
-        
-        try:
-            f_title = ImageFont.truetype(font_path, 35) # 유산명용 (매우 크게)
-            f_main = ImageFont.truetype(font_path, 26)  # 일반 칸용
-            f_content = ImageFont.truetype(font_path, 22) # 인터뷰 답변용
-        except:
-            f_title = f_main = f_content = ImageFont.load_default()
-
-        # 데이터 안전하게 가져오기
-        def get_s(key):
-            v = data.get(key, "")
-            return " ".join(v) if isinstance(v, list) else str(v)
-
-        # [좌표 재설정] - 1500px 너비 기준 양식 위치 조준
-        # 1. 선정 문화유산
-        draw.text((320, 240), get_s('heritage'), font=f_title, fill="#000")
-        
-        # 2. 선정 이유 (칸에 맞춰 줄바꿈)
-        reason_txt = get_s('reason')
-        reason_lines = textwrap.wrap(reason_txt, width=45)
-        for i, line in enumerate(reason_lines[:2]):
-            draw.text((320, 290 + (i*35)), line, font=f_content, fill="#333")
-            
-        # 3. 시대 / 4. 위치
-        draw.text((320, 395), get_s('era'), font=f_main, fill="#000")
-        draw.text((320, 445), get_s('location'), font=f_main, fill="#000")
-
-        # 5. 인터뷰 1 (Q & A)
-        draw.text((150, 540), f"Q. {get_s('q1')}", font=f_main, fill="#000")
-        a1_lines = textwrap.wrap(get_s('a1'), width=60)
-        for i, line in enumerate(a1_lines[:4]):
-            draw.text((150, 580 + (i*30)), f"A. {line}" if i==0 else f"   {line}", font=f_content, fill="#333")
-
-        # 6. 인터뷰 2
-        draw.text((150, 755), f"Q. {get_s('q2')}", font=f_main, fill="#000")
-        a2_lines = textwrap.wrap(get_s('a2'), width=60)
-        for i, line in enumerate(a2_lines[:4]):
-            draw.text((150, 795 + (i*30)), f"A. {line}" if i==0 else f"   {line}", font=f_content, fill="#333")
-
-        # 7. 인터뷰 3
-        draw.text((150, 970), f"Q. {get_s('q3')}", font=f_main, fill="#000")
-        a3_lines = textwrap.wrap(get_s('a3'), width=60)
-        for i, line in enumerate(a3_lines[:4]):
-            draw.text((150, 1010 + (i*30)), f"A. {line}" if i==0 else f"   {line}", font=f_content, fill="#333")
-
-        # 8. 테마 탐방안
-        draw.text((350, 1220), get_s('theme_title'), font=f_title, fill="#000")
-        tp_txt = get_s('theme_points')
-        tp_lines = textwrap.wrap(tp_txt, width=50)
-        for i, line in enumerate(tp_lines[:3]):
-            draw.text((350, 1290 + (i*30)), f"• {line}", font=f_content, fill="#333")
-
-        return img
-    except Exception as e:
-        st.error(f"이미지 생성 중 에러 발생: {e}")
+        available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+        preferences = ['models/gemini-1.5-flash', 'models/gemini-1.5-pro', 'models/gemini-pro']
+        for pref in preferences:
+            if pref in available_models:
+                return genai.GenerativeModel(pref)
+        return genai.GenerativeModel(available_models[0])
+    except:
         return None
 
-# --- 4. AI 데이터 생성 ---
-def get_ai_data(topic, history=[]):
-    if not model: return None
-    h_str = f"(제외 목록: {', '.join(history)})" if history else ""
-    prompt = f"""
-    당신은 고등학교 역사 전문가입니다. 학생의 진로 '{topic}'와 연관된 한국 문화유산을 하나 선정하세요. {h_str}
-    반드시 아래 JSON 형식으로만 답하세요. 억지로 연결하지 말고 실질적인 역사 근거가 있는 것만 고르세요.
-    답변은 목록([])이 아닌 하나의 긴 문자열(String)로 작성하세요.
+model = get_model()
 
-    {{ 
-      "heritage": "이름", "reason": "선정이유(구체적으로)", "era": "제작 시대", "location": "소재지", 
-      "q1": "질문1", "a1": "답변1", "q2": "질문2", "a2": "답변2", "q3": "질문3", "a3": "답변3", 
-      "theme_title": "탐방 제목", "theme_points": "포인트 3가지 요약" 
-    }}
+# --- 4. 수행평가 생성 함수 (중복 차단 및 억지 연결 금지 강화) ---
+def generate_history_report(topic, history_list=[]):
+    exclude_msg = ""
+    if history_list:
+        exclude_msg = f"""
+        ### [필독: 중복 금지 목록] ###
+        이미 학생에게 보여준 문화유산: {', '.join(history_list)}
+        이 목록에 있는 유산은 절대 다시 선택하지 마세요. 반드시 '새로운' 유산을 찾아야 합니다.
+        """
+
+    prompt = f"""
+    당신은 대한민국 최고의 한국사 전문가입니다. 학생의 진로/관심사인 '{topic}'와 실제로 깊고 타당한 연관이 있는 한국 문화유산(구석기~조선)을 하나 선정하세요.
+
+    {exclude_msg}
+
+    [작성 원칙]
+    1. 억지로 끼워 맞추지 마세요. 논리적이고 역사적인 근거가 확실한 것만 선정하세요.
+    2. 중복 절대 불가: 이미 추천된 유산은 제외하고 차선책 중 가장 훌륭한 유산을 고르세요.
+    3. 대한민국에는 수만 개의 문화유산이 있습니다. 자격루, 거북선 같은 유명한 것 외에도 특정 분야에 특화된 유물을 폭넓게 탐색하세요.
+    4. 선정 이유를 쓸 때 역사적 사실에 기반하여 누가 봐도 고개를 끄덕일 수 있는 관련성을 제시하세요.
+
+    양식:
+    1. 선정된 문화유산: 이름
+    2. 선정 이유: 역사적 근거를 바탕으로 한 구체적 관련성
+    3. 제작 시대: 시대
+    4. 현재 위치: 소재지
+    5. 인터뷰 1(생활/정치): Q&A
+    6. 인터뷰 2(시련/변화): Q&A
+    7. 인터뷰 3(비판/융합/비교 중 택1): 관점 명시 후 Q&A
+    8. 테마 탐방안: 제목과 포인트 3가지
     """
     try:
-        res = model.generate_content(prompt)
-        match = re.search(r'\{.*\}', res.text, re.DOTALL)
-        return json.loads(match.group()) if match else None
-    except: return None
+        response = model.generate_content(prompt)
+        return response.text
+    except Exception as e:
+        return f"생성 실패: {str(e)}"
 
-# --- 5. UI ---
+# --- 5. UI 구성 및 로직 ---
 st.title("🏛️ 한국사 문화유산 탐구 도우미AI")
-st.info("양식 사진을 올리고 진로를 입력하면 빈칸을 채운 이미지를 만들어 드립니다.")
+st.write("진로와 가장 관련 깊은 문화유산을 찾아 보고서 양식을 작성해 드립니다.")
 
-if 'history' not in st.session_state: st.session_state.history = []
-if 'img_res' not in st.session_state: st.session_state.img_res = None
+# 세션 상태 관리 (새로 접속 시 초기화됨)
+if 'history' not in st.session_state:
+    st.session_state.history = []
+if 'report' not in st.session_state:
+    st.session_state.report = ""
 
-up_file = st.file_uploader("📋 수행평가 빈 양식 사진 업로드", type=['jpg','png','jpeg'])
-user_input = st.text_input("나의 진로 또는 관심분야", placeholder="예: 의학, 로봇, 건축 등")
+user_input = st.text_input("나의 진로 또는 관심분야", placeholder="예: 건축가, 생명공학, 로봇공학 등")
 
-c1, c2 = st.columns(2)
+col1, col2 = st.columns(2)
 
-def start_process(is_new=True):
-    if not up_file or not user_input:
-        st.warning("사진과 진로를 모두 입력해주세요.")
-        return
-    with st.spinner("AI가 분석하여 양식을 채우는 중입니다..."):
-        if is_new: st.session_state.history = []
-        data = get_ai_data(user_input, st.session_state.history)
-        if data:
-            st.session_state.history.append(data.get('heritage', ''))
-            result = draw_content_on_image(up_file, data)
-            if result:
-                st.session_state.img_res = result
-        else:
-            st.error("AI가 데이터를 생성하지 못했습니다. 다시 시도해 주세요.")
+# [보고서 생성]
+if col1.button("보고서 생성"):
+    if user_input:
+        with st.spinner("가장 적절한 문화유산을 탐색 중입니다..."):
+            st.session_state.history = [] 
+            res = generate_history_report(user_input)
+            st.session_state.report = res
+            try:
+                name = res.split('1. 선정된 문화유산:')[1].split('\n')[0].strip()
+                st.session_state.history = [name]
+            except:
+                pass
+    else:
+        st.warning("분야를 입력해주세요.")
 
-if c1.button("✨ 수행평가 사진 완성하기"):
-    start_process(is_new=True)
+# [다른 유산 추천]
+if col2.button("다른 유산 추천 🔄"):
+    if user_input and st.session_state.history:
+        with st.spinner(f"새로운 관련 유산을 찾는 중..."):
+            res = generate_history_report(user_input, st.session_state.history)
+            st.session_state.report = res
+            try:
+                name = res.split('1. 선정된 문화유산:')[1].split('\n')[0].strip()
+                st.session_state.history.append(name)
+            except:
+                pass
+    elif not user_input:
+        st.warning("분야를 먼저 입력해주세요.")
+    else:
+        st.info("'보고서 생성'을 먼저 눌러주세요.")
 
-if c2.button("🔄 다른 문화유산 추천"):
-    start_process(is_new=False)
-
-if st.session_state.img_res:
+# --- 6. 결과 출력 ---
+if st.session_state.report:
     st.divider()
-    st.image(st.session_state.img_res, use_container_width=True, caption="완성된 수행평가지")
+    st.markdown('<div class="report-box">', unsafe_allow_html=True)
+    st.markdown(st.session_state.report)
+    st.markdown('</div>', unsafe_allow_html=True)
     
-    buf = io.BytesIO()
-    st.session_state.img_res.save(buf, format="JPEG")
-    st.download_button("📸 완성된 이미지 저장하기", buf.getvalue(), "completed_task.jpg", "image/jpeg")
+    # 다운로드 버튼
+    st.download_button(
+        label="📄 결과 저장 (TXT)",
+        data=f"국사쌤 사랑합니다 ❤️\n\n{st.session_state.report}",
+        file_name="report.txt"
+    )
