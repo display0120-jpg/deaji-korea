@@ -9,15 +9,15 @@ import os
 # --- 1. 페이지 설정 및 디자인 ---
 st.set_page_config(page_title="한국사 수행평가 도우미AI", layout="wide")
 
-# CSS: 우측 상단 문구 (작게, 위치 하향)
+# CSS: 우측 상단 문구 (더 작게, 더 아래로)
 st.markdown("""
     <style>
     .fixed-teacher-love {
         position: fixed;
-        top: 120px; 
+        top: 140px; 
         right: 25px;
-        color: #bbb;
-        font-size: 0.75em;
+        color: #ccc;
+        font-size: 0.7em;
         font-weight: normal;
         z-index: 9999;
     }
@@ -25,46 +25,56 @@ st.markdown("""
     <div class="fixed-teacher-love">국사쌤 사랑합니다 ❤️</div>
     """, unsafe_allow_html=True)
 
-# --- 2. API 및 모델 자동 연결 (404 에러 방지) ---
+# --- 2. API 및 모델 연결 (에러 상세 분석) ---
 if "GOOGLE_API_KEY" not in st.secrets:
-    st.error("Secrets에 GOOGLE_API_KEY를 등록해주세요.")
+    st.error("⚠️ Streamlit Secrets에 GOOGLE_API_KEY를 등록해주세요.")
     st.stop()
 
-genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
+# 키 공백 및 따옴표 완전 제거
+api_key = st.secrets["GOOGLE_API_KEY"].strip().strip('"').strip("'")
+genai.configure(api_key=api_key)
 
 @st.cache_resource
 def load_available_model():
-    # 시도할 모델 이름들
-    candidates = ['gemini-1.5-flash', 'models/gemini-1.5-flash', 'gemini-1.5-pro', 'models/gemini-pro']
+    # 최신 모델 명칭 후보군
+    candidates = [
+        'gemini-1.5-flash-latest', 
+        'gemini-1.5-flash', 
+        'models/gemini-1.5-flash',
+        'gemini-pro'
+    ]
+    last_error = ""
+    
     for name in candidates:
         try:
             m = genai.GenerativeModel(name)
-            # 작동 테스트
+            # 연결 테스트 (실제 호출)
             m.generate_content("hi", generation_config={"max_output_tokens": 1})
-            return m
-        except:
+            return m, None
+        except Exception as e:
+            last_error = str(e)
             continue
-    return None
+    return None, last_error
 
-model = load_available_model()
+model, error_log = load_available_model()
 
+# 연결 실패 시 구체적인 이유 출력
 if model is None:
-    st.error("❌ 사용 가능한 AI 모델을 찾을 수 없습니다. API 키를 다시 확인해주세요.")
+    st.error("❌ AI 모델 연결에 실패했습니다.")
+    st.info(f"🚩 구글 서버의 에러 메시지: {error_log}")
+    st.warning("💡 해결방법: \n1. [Google AI Studio](https://aistudio.google.com/app/apikey)에서 'Create API key in new project'로 새 키를 만드세요.\n2. 새 키를 Secrets에 다시 등록하고 앱을 Reboot 하세요.")
     st.stop()
 
-# --- 3. 이미지 합성 함수 (좌표 보정) ---
+# --- 3. 이미지 합성 함수 ---
 def draw_on_image(uploaded_file, data):
     try:
         img = Image.open(uploaded_file).convert("RGB")
-        # 이미지 너비를 1200px로 표준화하여 좌표 오차 방지
         base_w = 1200
         w_percent = (base_w / float(img.size[0]))
         h_size = int((float(img.size[1]) * float(w_percent)))
         img = img.resize((base_w, h_size), Image.Resampling.LANCZOS)
         
         draw = ImageDraw.Draw(img)
-        
-        # 폰트 로드
         font_path = "/usr/share/fonts/truetype/nanum/NanumGothic.ttf"
         if not os.path.exists(font_path): font_path = "C:/Windows/Fonts/malgun.ttf"
         
@@ -78,15 +88,13 @@ def draw_on_image(uploaded_file, data):
         # [좌표 입력]
         draw.text((250, 245), data.get('heritage', ''), font=f_b, fill="black")
         
-        reason = data.get('reason', '')
-        r_lines = textwrap.wrap(reason, width=42)
+        r_lines = textwrap.wrap(data.get('reason', ''), width=42)
         for i, line in enumerate(r_lines[:2]):
             draw.text((250, 285 + (i*28)), line, font=f_s, fill="black")
             
         draw.text((250, 440), data.get('era', ''), font=f_m, fill="black")
         draw.text((250, 490), data.get('location', ''), font=f_m, fill="black")
 
-        # 인터뷰 (줄바꿈 및 요약)
         def draw_qna(y, q, a):
             draw.text((115, y), f"Q: {q[:50]}", font=f_m, fill="black")
             a_lines = textwrap.wrap(a, width=65)
@@ -105,21 +113,10 @@ def draw_on_image(uploaded_file, data):
         st.error(f"이미지 생성 실패: {e}")
         return None
 
-# --- 4. AI 데이터 생성 (억지 연결 금지) ---
+# --- 4. AI 데이터 생성 ---
 def get_ai_json(topic, history=[]):
     exclude = f"(이미 나온 {', '.join(history)} 제외)" if history else ""
-    prompt = f"""
-    당신은 한국사 전문가입니다. 학생의 진로 '{topic}'와 '실질적으로 깊은 연관'이 있는 한국 문화유산을 선정해 JSON으로만 답하세요.
-    {exclude}
-    억지로 끼워 맞추지 말고, 역사적 근거가 확실한 유산만 고르세요.
-    
-    JSON 형식:
-    {{
-        "heritage": "이름", "reason": "이유", "era": "시대", "location": "위치",
-        "q1": "질문", "a1": "답변", "q2": "질문", "a2": "답변", "q3": "질문", "a3": "답변",
-        "theme_title": "제목", "theme_points": "포인트"
-    }}
-    """
+    prompt = f"학생 진로 '{topic}'와 연관된 한국 문화유산을 선정해 JSON으로 답하세요. {exclude} 선정유산, 선정 이유, 시대, 위치, 인터뷰 1/2/3, 탐방안 포함."
     try:
         res = model.generate_content(prompt)
         t = res.text
@@ -142,7 +139,7 @@ def process(is_new=True):
     if not up_file or not user_in:
         st.warning("사진과 진로를 모두 입력해주세요.")
         return
-    with st.spinner("분석 중..."):
+    with st.spinner("AI가 분석 중..."):
         if is_new: st.session_state.history = []
         data = get_ai_json(user_in, st.session_state.history)
         if data:
