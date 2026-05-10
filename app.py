@@ -29,7 +29,7 @@ if st.button("가이드 생성"):
     else:
         try:
             with st.spinner("AI 분석 중..."):
-                model = genai.GenerativeModel('gemini-1.5-flash')
+                model = genai.GenerativeModel('gemini-pro-vision')
                 img1 = Image.open(file1)
                 img2 = Image.open(file2)
                 prompt = f"""
