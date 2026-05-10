@@ -1,66 +1,63 @@
 import streamlit as st
 import requests
 import urllib.parse
-import random
+import re
 
-# --- 1. 진로/관심 분야별 팩트 기반 문화유산 매핑 ---
-# 이 데이터는 해당 유산이 왜 해당 진로와 관련 있는지 '역사적 팩트'를 담고 있습니다.
-RELATION_DB = {
-    "의학": [
-        {"heritage": "동의보감", "fact": "2009년 유네스코 세계기록유산 등재. 허준이 편찬한 의학서로 당시 동양 의학 지식을 집대성한 실증적 자료입니다."},
-        {"heritage": "향약구급방", "fact": "고려 시대 우리 땅의 약재로 병을 고치는 법을 정리한 현존 최고의 의학서입니다."},
-        {"heritage": "제중원", "fact": "우리나라 최초의 근대식 국립 서양식 병원으로, 전통 의학에서 현대 의학으로 넘어가는 가교 역할을 했습니다."}
-    ],
-    "작가/출판": [
-        {"heritage": "해인사 대장경판", "fact": "팔만대장경은 8만여 장의 목판에 오자 하나 없이 완벽한 편집과 기록을 보여주는 인쇄 문화의 정수입니다."},
-        {"heritage": "직지심체요절", "fact": "세계에서 가장 오래된 금속 활자본으로, 지식의 대중화와 인쇄 기술 혁명을 보여주는 증거입니다."},
-        {"heritage": "조선왕조실록", "fact": "사관들이 왕의 행적을 기록한 역사서로, 철저한 기록 정신과 객관적인 집필 방식을 보여줍니다."}
-    ],
-    "미술/디자인": [
-        {"heritage": "고려청자", "fact": "독창적인 상감 기법과 비색을 통해 당시 세계 최고의 공예 예술적 성취를 증명합니다."},
-        {"heritage": "백자 달항아리", "fact": "절제된 곡선의 아름다움과 담백한 색채로 한국적 미학의 극치를 보여주는 유산입니다."},
-        {"heritage": "금동미륵보살반가사유상", "fact": "신라 시대 금동 조각 기술과 온화한 미소를 담은 예술적 비례가 특징입니다."}
-    ],
-    "과학/IT": [
-        {"heritage": "첨성대", "fact": "신라 시대 천문 관측 시설로, 하늘의 데이터를 수집하고 이를 농업과 정치에 활용한 고대 과학의 산물입니다."},
-        {"heritage": "자격루", "fact": "세종 시대 만든 자동 물시계로, 정밀한 기계 공학과 자동 제어 시스템이 적용된 혁신적 기구입니다."},
-        {"heritage": "거중기", "fact": "정약용이 도르래 원리를 이용해 만든 건축 기계로, 수원 화성 축조의 과학적 효율성을 입증합니다."}
-    ],
-    "요리/식품": [
-        {"heritage": "수라간", "fact": "조선 왕실의 음식을 조리하던 곳으로, 당시의 식재료 관리와 전통 조리법이 체계적으로 보존된 장소입니다."},
-        {"heritage": "징광 옹기", "fact": "발효 음식 보존을 위한 숨 쉬는 그릇으로, 선조들의 식품 보관 과학이 담겨 있습니다."}
-    ]
-}
+# --- 1. 위키백과 실시간 데이터 추출 함수 ---
+def fetch_heritage_by_interest(interest):
+    """사용자 관심사로 위키백과를 검색해 가장 관련 있는 한국 문화유산을 찾음"""
+    search_url = "https://ko.wikipedia.org/w/api.php"
+    # 한국 문화유산으로 한정하기 위해 검색어 조합 최적화
+    query = f"{interest} 관련 한국 문화재 유산"
+    
+    params = {
+        "action": "query",
+        "list": "search",
+        "srsearch": query,
+        "format": "json",
+        "srlimit": 5
+    }
+    headers = {'User-Agent': 'FactCheckBot/2.0'}
+    
+    try:
+        res = requests.get(search_url, params=params, headers=headers).json()
+        search_results = res.get('query', {}).get('search', [])
+        if not search_results:
+            return None
+        # 가장 검색 순위가 높은 제목 반환
+        return search_results[0]['title']
+    except:
+        return None
 
-HEADERS = {'User-Agent': 'PerformanceBot/3.0'}
-
-def get_wiki_summary(title):
+def get_detailed_fact(title):
+    """위키백과 API에서 실제 역사적 팩트(요약문)를 가져옴"""
     url = f"https://ko.wikipedia.org/api/rest_v1/page/summary/{urllib.parse.quote(title)}"
-    res = requests.get(url, headers=HEADERS)
+    res = requests.get(url, headers={'User-Agent': 'FactCheckBot/2.0'})
     return res.json() if res.status_code == 200 else None
 
-# --- 2. 웹 설정 및 CSS (팝업 하트 애니메이션) ---
-st.set_page_config(page_title="역사 수행평가 전문가 AI", layout="wide")
+# --- 2. 웹 페이지 설정 및 하트 애니메이션 CSS ---
+st.set_page_config(page_title="실시간 팩트체크 수행 AI", layout="wide")
 
 st.markdown("""
     <style>
     @keyframes heartbeat {
         0% { transform: scale(1); }
-        30% { transform: scale(1.4); }
+        25% { transform: scale(1.4); }
+        50% { transform: scale(1); }
+        75% { transform: scale(1.4); }
         100% { transform: scale(1); }
     }
     .heart-active {
         display: inline-block;
-        font-size: 70px;
-        animation: heartbeat 0.4s ease-in-out;
+        font-size: 80px;
+        animation: heartbeat 0.6s ease-in-out;
         cursor: pointer;
         text-align: center;
         width: 100%;
     }
     .heart-static {
         display: inline-block;
-        font-size: 70px;
-        cursor: pointer;
+        font-size: 80px;
         text-align: center;
         width: 100%;
     }
@@ -70,89 +67,87 @@ st.markdown("""
 # --- 3. 사이드바: 팝업 하트 ---
 with st.sidebar:
     st.header("💖 응원 하트")
-    if 'pop_trigger' not in st.session_state: st.session_state.pop_trigger = False
+    if 'pop' not in st.session_state: st.session_state.pop = False
     
-    if st.button("하트 꾹! ❤️"):
-        st.session_state.pop_trigger = True
+    if st.button("하트 클릭! ❤️"):
+        st.session_state.pop = True
     else:
-        st.session_state.pop_trigger = False
+        st.session_state.pop = False
 
-    # 애니메이션 클래스 적용
-    heart_class = "heart-active" if st.session_state.pop_trigger else "heart-static"
-    st.markdown(f'<div class="{heart_class}">❤️</div>', unsafe_allow_html=True)
-    st.write("응원 하트를 누르면 힘이 납니다!")
+    h_class = "heart-active" if st.session_state.pop else "heart-static"
+    st.markdown(f'<div class="{h_class}">❤️</div>', unsafe_allow_html=True)
+    st.write("하트가 두근두근 커졌다 작아집니다!")
 
-# --- 4. 메인 화면 로직 ---
-st.title("📜 진로 맞춤형 문화유산 탐구 가이드")
-st.write("나의 진로/관심사를 입력하면 **역사적 팩트가 일치하는 유산**을 연결해 드립니다.")
+# --- 4. 메인 로직: 실시간 분석 ---
+st.title("🇰🇷 실시간 분석형 문화유산 인터뷰 AI")
+st.write("관심사를 입력하면 위키백과에서 **실제 데이터**를 찾아 유산을 추천하고 인터뷰를 만듭니다.")
 
-if 'current_res' not in st.session_state: st.session_state.current_res = None
+user_input = st.text_input("나의 진로/관심 분야 (예: 심리학, 인공지능, 기상학, 환경 등)", placeholder="입력 후 엔터를 누르세요")
 
-user_interest = st.text_input("나의 진로나 관심 분야 (예: 의학, 작가, 미술, IT, 요리)", placeholder="의학")
-
-c1, c2 = st.columns([1, 4])
-
-with c1:
-    if st.button("🔍 팩트 기반 추천"):
-        if user_interest:
-            # 1. DB에서 매칭되는 카테고리 찾기
-            found_key = next((k for k in RELATION_DB if k in user_interest), None)
-            if found_key:
-                st.session_state.current_res = random.choice(RELATION_DB[found_key])
-            else:
-                # DB에 없으면 위키백과 직접 검색 (fallback)
-                st.session_state.current_res = {"heritage": user_interest, "fact": f"{user_interest}와 관련된 역사적 자료를 탐구합니다."}
-        else: st.warning("분야를 입력해주세요.")
-
-with c2:
-    if st.button("🔄 다른 유산 추천"):
-        if user_interest:
-            found_key = next((k for k in RELATION_DB if k in user_interest), None)
-            if found_key:
-                options = [o for o in RELATION_DB[found_key] if o['heritage'] != st.session_state.current_res['heritage']]
-                if options: st.session_state.current_res = random.choice(options)
-                else: st.info("이 분야의 추천 데이터가 하나뿐입니다!")
-
-# --- 5. 수행평가 결과 출력 ---
-if st.session_state.current_res:
-    res = st.session_state.current_res
-    data = get_wiki_summary(res['heritage'])
-    
-    if data:
-        st.divider()
-        st.header(f"🏛️ 추천 문화유산: {data['title']}")
+if user_input:
+    with st.spinner(f"'{user_input}'와(과) 관련된 한국 문화유산을 실시간 탐색 중..."):
+        # 1. 실시간 검색으로 유산 제목 결정
+        target_title = fetch_heritage_by_interest(user_input)
         
-        # [팩트 확인 섹션]
-        st.subheader("✅ 진로와 관련된 명확한 팩트")
-        st.success(f"**[{user_interest}]** 관심사와 관련된 역사적 근거:\n\n{res['fact']}")
-        st.link_button("🌐 위키백과에서 실제 팩트 더 보기", f"https://ko.wikipedia.org/wiki/{urllib.parse.quote(data['title'])}")
-
-        st.write("---")
-        st.subheader("💬 수행평가 심화 인터뷰")
-        
-        col_img, col_txt = st.columns([1, 2])
-        with col_img:
-            if 'thumbnail' in data: st.image(data['thumbnail']['source'], width=350)
-            else: st.write("이미지 정보 없음")
+        if target_title:
+            # 2. 유산의 실제 팩트 정보 가져오기
+            data = get_detailed_fact(target_title)
             
-        with col_txt:
-            st.info(f"Q: {data['title']}님, '{user_interest}' 관점에서 당신의 제작 의도는 무엇인가요?")
-            st.write(f"A: 나는 당시 {user_interest}에 대한 사회적 필요와 조상들의 기술력이 합쳐져 탄생했단다. 특히 {res['fact'][:50]}... 와 같은 역사적 사실이 나의 존재 이유를 증명하지.")
+            if data and 'extract' in data:
+                st.divider()
+                st.header(f"🏛️ 실시간 추천 유산: {data['title']}")
+                
+                # 팩트 근거 (연관성 설명)
+                st.subheader("✅ 팩트 기반 연관성 분석")
+                # 위키백과 요약문에서 팩트 추출
+                fact_text = data['extract']
+                st.info(f"**'{user_input}'** 분야와 **{data['title']}**의 연결고리:\n\n이 유산은 역사적으로 '{fact_text[:120]}...'와 같은 특징을 지니고 있어, {user_input}적 관점에서 탐구하기에 매우 적합한 팩트를 담고 있습니다.")
+                st.link_button("🌐 위키백과 실시간 원문 데이터 확인", data['content_urls']['desktop']['page'])
 
-        st.info("Q: 세월을 거치며 겪은 가장 큰 역사적 시련은 무엇이었나요?")
-        st.write("A: 전란의 화마 속에서도 나를 지키려 했던 우리 민족의 신념이 아니었다면, 지금 너에게 {user_interest}의 역사적 증거를 보여줄 수 없었을 거야.")
+                st.write("---")
+                st.subheader("💬 수행평가용 실시간 팩트 인터뷰")
 
-        # 관점 선택 인터뷰
-        v = st.radio("인터뷰 3 관점을 선택하세요", ["비판적 관점", "융합적 관점", "비교사적 관점"])
-        st.write(f"**[인터뷰 3: {v}]**")
-        if "비판" in v:
-            st.write("Q: 제작 과정에서 백성들의 고통이나 지배층의 권력 과시는 없었나요?\n\nA: 나의 탄생 뒤에는 수많은 백성의 노역이 있었어. 그 희생이 누구를 위한 것이었는지 비판적으로 고민해보는 게 너의 과제야.")
-        elif "융합" in v:
-            st.write(f"Q: 현대 {user_interest} 기술과의 공통점은?\n\nA: 나의 설계에는 현대 시스템 공학과 유사한 정밀함과 선조들의 융합적 지혜가 숨어있어 과학적 가치를 더해준단다.")
+                col_img, col_txt = st.columns([1, 2])
+                with col_img:
+                    if 'thumbnail' in data: st.image(data['thumbnail']['source'], caption=data['title'], use_container_width=True)
+                
+                with col_txt:
+                    # 인터뷰 1: 실제 팩트 기반 정체성
+                    st.write(f"**[인터뷰 1: 나의 가치]**")
+                    st.write(f"Q: {data['title']}님, '{user_input}' 관점에서 당신은 어떤 존재인가요?")
+                    # 위키백과 데이터 활용한 답변 생성
+                    st.write(f"A: 나는 '{fact_text[:150]}...'라는 역사적 기록이 증명하듯, 당시 사람들의 기술과 지혜가 집약된 결과물이란다. {user_input}의 본질과 나의 탄생 배경은 맞닿아 있지.")
+
+                # 인터뷰 2: 실제 팩트 기반 시련 (데이터 내 연도나 전란 키워드 추출 시도)
+                st.write("**[인터뷰 2: 역사적 기록 속 시련]**")
+                st.write("Q: 당신의 기록 중 가장 기억에 남는 실제 역사적 변화나 시련은 무엇인가요?")
+                
+                # 팩트 기반 시련 답변 구성 (전쟁, 훼손, 복원 등의 단어가 있는지 확인)
+                trial_msg = "오랜 세월을 거치며 시대의 변화와 함께 훼손되기도 했지만, 우리 민족의 복원 의지 덕분에 지금의 자리를 지킬 수 있었어."
+                if "전쟁" in fact_text or "란" in fact_text:
+                    trial_msg = "역사 기록에 남은 전란의 화마 속에서도 내 가치를 알아본 이들이 나를 지켜냈기에 지금 너와 만날 수 있는 거란다."
+                elif "도굴" in fact_text or "보수" in fact_text:
+                    trial_msg = "과거 보수 과정에서 새로운 유물이 발견되거나 훼손을 극복한 사례는 내 생애 가장 큰 변화의 순간이었지."
+                
+                st.write(f"A: {trial_msg} 팩트 중심의 기록을 보면 내가 견뎌온 시간의 깊이를 알 수 있을 거야.")
+
+                # 인터뷰 3: 관점 선택
+                st.write("---")
+                v = st.radio("질문 관점을 선택하세요", ["융합적 관점", "비판적 관점", "비교사적 관점"])
+                st.write(f"**[인터뷰 3: {v}]**")
+                if "융합" in v:
+                    st.write(f"Q: 현대 {user_input} 기술과 당신의 제작 원리 사이의 공통점은?\n\nA: 나의 제작 방식에는 단순한 예술을 넘어 치밀한 과학적 계산이 숨어있어. 조상들의 융합적 사고가 얼마나 현대적인지 팩트로 증명해줄게.")
+                elif "비판" in v:
+                    st.write("Q: 당신을 만들기 위해 치렀던 사회적 비용이나 백성들의 희생에 대한 생각은?\n\nA: 나의 가치를 칭송할 때, 나를 세우기 위해 고된 노역을 견뎠던 민초들의 땀방울도 함께 기억해줘. 그것이 진정한 역사적 성찰이란다.")
+                else:
+                    st.write("Q: 다른 나라의 비슷한 유산과 비교했을 때 당신만의 독창성은?\n\nA: 세계 어디에도 나처럼 자연과 조화를 이루면서도 정교한 기록과 철학을 동시에 유지하는 유산은 드물어. 이것이 한국 문화유산만의 자부심이지.")
+
+                # 탐방 기획안
+                st.divider()
+                st.subheader("🗺️ 테마 탐방 기획안")
+                st.success(f"**- 제목:** {user_interest if 'user_interest' in locals() else user_input}의 눈으로 분석한 '{data['title']}' 팩트 투어")
+                st.write(f"**- 필수 관람 포인트:** 위키백과에서 확인한 '{data['title']}'의 핵심 구조를 눈으로 직접 확인하고, 안내판의 역사적 설명과 실제 모습의 일치 여부를 대조하며 감상하세요.")
+            else:
+                st.error("상세 정보를 가져오는 데 실패했습니다. 다른 유산으로 시도해보세요.")
         else:
-            st.write("Q: 세계의 다른 유산과 비교했을 때 당신만의 독창성은?\n\nA: 세계 어디에도 나처럼 정교한 제작 방식과 보존 철학을 동시에 갖춘 유산은 드물어. 우리 민족의 독보적 실력을 보여준단다.")
-
-        st.divider()
-        st.subheader("🗺️ 테마 탐방 기획안")
-        st.write(f"**- 기획 제목:** {user_interest}의 시선으로 바라본 '{data['title']}'의 팩트 탐험")
-        st.write(f"**- 필수 관람 포인트:** 유산의 외형보다는 그것이 만들어진 '공정'과 '목적'에 집중하세요. 특히 {user_interest}적 가치가 실제 유물에 어떻게 투영되었는지 확인하는 것이 핵심입니다.")
+            st.error(f"'{user_input}'와(과) 관련된 한국 문화유산을 찾을 수 없습니다. 조금 더 넓은 범위의 단어를 입력해보세요.")
