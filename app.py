@@ -6,11 +6,11 @@ import textwrap
 import io
 import os
 import re
+import time
 
 # --- 1. 페이지 설정 및 디자인 ---
 st.set_page_config(page_title="한국사 수행평가 도우미AI", layout="wide")
 
-# CSS: 우측 상단 문구
 st.markdown("""
     <style>
     .fixed-teacher-love {
@@ -26,7 +26,7 @@ st.markdown("""
     <div class="fixed-teacher-love">국사쌤 사랑합니다 ❤️</div>
     """, unsafe_allow_html=True)
 
-# --- 2. API 설정 및 모델 연결 ---
+# --- 2. API 설정 및 모델 연결 (할당량 에러 방지용 모델 선택) ---
 if "GOOGLE_API_KEY" not in st.secrets:
     st.error("⚠️ Streamlit Secrets에 GOOGLE_API_KEY를 등록해주세요.")
     st.stop()
@@ -35,24 +35,19 @@ genai.configure(api_key=st.secrets["GOOGLE_API_KEY"].strip().strip('"').strip("'
 
 @st.cache_resource
 def get_working_model():
+    # 무료 한도가 가장 넉넉한 1.5-flash를 1순위로 설정합니다.
+    preferences = ['models/gemini-1.5-flash', 'models/gemini-1.5-pro', 'models/gemini-pro']
     try:
         available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-        preferences = ['models/gemini-1.5-flash', 'models/gemini-1.5-pro', 'models/gemini-pro']
-        target = next((p for p in preferences if p in available_models), available_models[0] if available_models else None)
+        target = next((p for p in preferences if p in available_models), None)
         
         if target:
-            # 안전 필터 최대한 해제 (역사적 사실 차단 방지)
-            safety_settings = [
-                {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
-                {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
-                {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
-                {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
-            ]
+            # 안전 필터 해제
+            safety_settings = [{"category": f"HARM_CATEGORY_{c}", "threshold": "BLOCK_NONE"} for c in ["HARASSMENT", "HATE_SPEECH", "SEXUALLY_EXPLICIT", "DANGEROUS_CONTENT"]]
             return genai.GenerativeModel(model_name=target, safety_settings=safety_settings)
-        return None
     except Exception as e:
-        st.error(f"모델 연결 오류: {e}")
-        return None
+        st.error(f"모델 연결 중 오류: {e}")
+    return None
 
 model = get_working_model()
 
@@ -74,8 +69,8 @@ def draw_on_jpg(uploaded_file, data):
         except:
             f_m = f_s = f_b = ImageFont.load_default()
 
-        # 데이터 입력 (좌표 보정)
-        draw.text((250, 245), data.get('heritage', '내용 없음'), font=f_b, fill="black")
+        # [좌표 입력] 사진 칸에 맞춰 미세조정됨
+        draw.text((250, 245), data.get('heritage', ''), font=f_b, fill="black")
         r_lines = textwrap.wrap(data.get('reason', ''), width=45)
         for i, line in enumerate(r_lines[:2]):
             draw.text((250, 285 + (i*28)), line, font=f_s, fill="black")
@@ -98,31 +93,24 @@ def draw_on_jpg(uploaded_file, data):
         st.error(f"이미지 생성 실패: {e}")
         return None
 
-# --- 4. AI 내용 생성 및 파싱 ---
+# --- 4. AI 내용 생성 ---
 def get_ai_content(topic, history=[]):
-    exclude = f"(이미 추천된 {', '.join(history)} 제외)" if history else ""
     prompt = f"""
-    당신은 역사 전문가입니다. 학생 진로 '{topic}'와 직접적 연관이 있는 한국 문화유산을 선정하세요. {exclude}
-    반드시 아래 JSON 형식으로만 대답하세요. JSON 외의 설명이나 인사는 하지 마세요.
-
-    {{
-        "heritage": "이름", "reason": "선정 이유", "era": "시대", "location": "위치",
-        "q1": "질문1", "a1": "답변1", "q2": "질문2", "a2": "답변2", "q3": "질문3", "a3": "답변3",
-        "theme_title": "제목", "theme_points": "포인트"
-    }}
+    당신은 역사 전문가입니다. 학생 진로 '{topic}'와 직접적 연관이 있는 한국 문화유산을 선정하여 JSON으로 답하세요.
+    중복 금지 목록: {history}
+    반드시 JSON 형식 {{ "heritage": "...", "reason": "...", ... }} 으로만 답하세요.
     """
     try:
         res = model.generate_content(prompt)
-        raw_text = res.text
-        # 정규표현식으로 JSON 블록만 추출
-        json_match = re.search(r'\{.*\}', raw_text, re.DOTALL)
-        if json_match:
-            return json.loads(json_match.group())
-        else:
-            st.error(f"AI 응답 형식이 올바르지 않습니다: {raw_text}")
-            return None
+        match = re.search(r'\{.*\}', res.text, re.DOTALL)
+        if match:
+            return json.loads(match.group())
+        return None
     except Exception as e:
-        st.error(f"API 요청 실패: {e}")
+        if "429" in str(e):
+            st.error("🚨 AI 사용량이 초과되었습니다. 1분 뒤에 다시 시도하거나, 새로운 API 키를 등록해주세요.")
+        else:
+            st.error(f"내용 생성 실패: {e}")
         return None
 
 # --- 5. UI ---
@@ -140,22 +128,25 @@ def handle_click(is_reset=True):
     if not up_jpg or not user_job:
         st.warning("사진과 진로를 모두 입력해주세요.")
         return
-    with st.spinner("가장 적절한 유산을 분석 중..."):
+    with st.spinner("가장 적절한 유산을 분석 중입니다..."):
         if is_reset: st.session_state.history = []
         data = get_ai_content(user_job, st.session_state.history)
         if data:
             st.session_state.history.append(data.get('heritage'))
-            res_img = draw_on_jpg(up_jpg, data)
-            if res_img: st.session_state.last_img = res_img
+            img = draw_on_jpg(up_jpg, data)
+            if img: st.session_state.last_img = img
         else:
-            st.error("데이터를 생성하지 못했습니다. 다시 시도해 주세요.")
+            st.info("다시 시도 버튼을 눌러주세요.")
 
-if c1.button("수행평가(JPG) 완성하기"): handle_click(True)
-if c2.button("다른 유산 추천 🔄"): handle_click(False)
+if c1.button("수행평가(JPG) 완성하기"):
+    handle_click(is_reset=True)
+
+if c2.button("다른 유산 추천 🔄"):
+    handle_click(is_reset=False)
 
 if st.session_state.last_img is not None:
     st.divider()
     st.image(st.session_state.last_img, use_container_width=True)
     buf = io.BytesIO()
     st.session_state.last_img.save(buf, format="JPEG")
-    st.download_button("📸 완성 이미지 저장", buf.getvalue(), "task.jpg", "image/jpeg")
+    st.download_button("📸 완성 이미지 저장", buf.getvalue(), "result.jpg", "image/jpeg")
